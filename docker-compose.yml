@@ -1,0 +1,158 @@
+version: "3.9"
+
+services:
+
+  # -------------------------------------------------------------------------
+  # PostgreSQL — message archive database (persistent service)
+  # -------------------------------------------------------------------------
+  postgres:
+    image: postgres:16-alpine
+    container_name: chat-summarizer-postgres
+    restart: unless-stopped
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: "${POSTGRES_DB}"
+      POSTGRES_USER: "${POSTGRES_USER}"
+      POSTGRES_PASSWORD: "${POSTGRES_PASSWORD}"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  # -------------------------------------------------------------------------
+  # Ollama — local LLM inference server
+  # Pull model first: docker compose run --rm ollama ollama pull llama3.1:8b
+  # -------------------------------------------------------------------------
+  ollama:
+    image: ollama/ollama:latest
+    container_name: chat-summarizer-ollama
+    restart: "no"
+    ports:
+      - "11434:11434"
+    volumes:
+      - ./ollama-models:/root/.ollama
+    environment:
+      - OLLAMA_KEEP_ALIVE=0
+    # Remove the 'deploy' block if running CPU-only (no NVIDIA GPU)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # -------------------------------------------------------------------------
+  # chat-summarizer — Python application (runs once and exits)
+  # Usage: docker compose run --rm app
+  # Usage (prune): docker compose run -it --rm app --prune
+  #
+  # Per-channel fetch cursors are stored in the Postgres channel_state table
+  # rather than a local state.json file, so no state file bind mount is needed.
+  # -------------------------------------------------------------------------
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: chat-summarizer-app
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./summaries:/app/summaries
+      - ./logs:/app/logs
+    env_file:
+      - .env
+    environment:
+      - PYTHONUNBUFFERED=1
+
+  # -------------------------------------------------------------------------
+  # ---- TESTING PROFILE ----------------------------------------------------
+  # The three services below only start when you pass --profile testing.
+  # They provide a self-contained Rocket.Chat instance for local development
+  # and integration testing without touching any production server.
+  #
+  # Start:    docker compose --profile testing up -d
+  # Stop:     docker compose --profile testing down
+  # Reset:    docker compose --profile testing down -v   (wipes all data)
+  # -------------------------------------------------------------------------
+
+  # MongoDB — required by Rocket.Chat (must run as a replica set)
+  mongo:
+    image: mongo:6.0
+    container_name: chat-summarizer-mongo
+    restart: unless-stopped
+    command: mongod --replSet rs0 --oplogSize 128
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    profiles: [testing]
+
+  # One-shot container that initialises the MongoDB replica set on first start.
+  # Safe to re-run: the rs.initiate() call is wrapped in a try/catch so it is
+  # a no-op if the replica set is already configured.
+  mongo-init-replica:
+    image: mongo:6.0
+    container_name: chat-summarizer-mongo-init
+    restart: "no"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    command: >
+      mongosh --host mongo:27017 --eval
+      "try { rs.status(); print('replica set already initialised') }
+       catch(e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}); print('replica set initialised') }"
+    profiles: [testing]
+
+  # Rocket.Chat — accessible at http://localhost:3000 from the host browser
+  # and at http://rocketchat:3000 from within the Docker network (app service).
+  #
+  # On first start, complete the setup wizard at http://localhost:3000 to create
+  # the admin account.  Then create a test user and issue a Personal Access Token
+  # for that user (see README.md — Testing with a local Rocket.Chat instance).
+  rocketchat:
+    image: rocket.chat:latest
+    container_name: chat-summarizer-rocketchat
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+      mongo-init-replica:
+        condition: service_completed_successfully
+    ports:
+      - "3000:3000"
+    environment:
+      ROOT_URL: http://localhost:3000
+      PORT: "3000"
+      MONGO_URL: mongodb://mongo:27017/rocketchat?replicaSet=rs0
+      MONGO_OPLOG_URL: mongodb://mongo:27017/local?replicaSet=rs0
+      # Uncomment the three lines below to skip the setup wizard on first start.
+      # Rocket.Chat 6+ only. Remove after the initial admin account is created.
+      #ADMIN_USERNAME: admin
+      #ADMIN_EMAIL: admin@localhost
+      #ADMIN_PASS: changeme
+    profiles: [testing]
+
+volumes:
+  postgres-data:    # Persists Postgres data across container restarts and rebuilds
+  mongo-data:       # Persists Rocket.Chat's MongoDB data across restarts

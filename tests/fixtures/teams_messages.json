@@ -1,0 +1,21 @@
+{
+  "value": [
+    {
+      "id": "teams-msg-001",
+      "messageType": "message",
+      "createdDateTime": "2026-07-05T09:14:00Z",
+      "body": {"content": "Morning — sprint planning is at 10 AM today.", "contentType": "text"},
+      "from": {"user": {"id": "u1", "displayName": "Alice Smith"}},
+      "replyToId": null
+    },
+    {
+      "id": "teams-msg-002",
+      "messageType": "message",
+      "createdDateTime": "2026-07-05T09:16:00Z",
+      "body": {"content": "Thanks for the reminder — joining now.", "contentType": "text"},
+      "from": {"user": {"id": "u2", "displayName": "Bob Jones"}},
+      "replyToId": "teams-msg-001"
+    }
+  ],
+  "@odata.nextLink": null
+}

@@ -1,0 +1,116 @@
+# chat-summarizer configuration
+# See DESIGN.md §4 for full field documentation.
+# Copy .env.example to .env and fill in your secrets before running.
+
+rocketchat:
+  enabled: true
+  url: "https://chat.example.com"
+  user_id: "${RC_USER_ID}"
+  auth_token: "${RC_AUTH_TOKEN}"
+  channels:
+    - name: "general"
+      lookback_hours: 24
+    - name: "engineering"
+      lookback_hours: 8
+  max_messages_per_run: 500
+  page_size: 100
+
+teams:
+  enabled: false   # Set to true after completing Azure app registration (see DESIGN.md §7)
+  tenant_id: "${TEAMS_TENANT_ID}"
+  client_id: "${TEAMS_CLIENT_ID}"
+  client_secret: "${TEAMS_CLIENT_SECRET}"
+  teams_channels:
+    - team_name: "Engineering"
+      team_id: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
+      channels:
+        - channel_name: "general"
+          channel_id: "19:xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx@thread.tacv2"
+  max_messages_per_run: 200
+  page_size: 50
+
+ollama:
+  url: "http://ollama:11434"
+  model: "llama3.1:8b"
+  options:
+    temperature: 0.3
+    num_predict: 1024
+    top_p: 0.9
+  prompt_template: |
+    You are an expert at summarizing workplace chat conversations.
+
+    Below are {{ message_count }} messages from the #{{ channel }} channel
+    on {{ platform }} for {{ date }}.
+
+    Your task:
+    1. Write a concise paragraph summary (3-5 sentences) of the main topics discussed.
+    2. List 3-7 key points as bullet points, each starting with "- ".
+    3. Note any action items or decisions made, prefixed with "[ACTION]" or "[DECISION]".
+
+    Important: Do not include any personally identifying information beyond
+    what is in the messages. Be neutral and factual.
+
+    Messages:
+    {{ messages }}
+
+    ---
+    Respond with exactly this structure (no extra commentary):
+
+    ## Summary
+    <paragraph>
+
+    ## Key Points
+    - <point>
+
+    ## Actions & Decisions
+    - [ACTION/DECISION] <item>
+  timeout_seconds: 120
+
+output:
+  # Root directory for per-thread output files.
+  # Structure: <directory>/<platform>/<channel>/<YYYY-MM-DD>/<thread_id>/
+  #   raw.md      — cumulative verbatim transcript (append-only)
+  #   summary.md  — latest LLM summary (overwritten when new activity arrives)
+  directory: "./summaries"
+
+# ---------------------------------------------------------------------------
+# Who am I — used for thread eligibility detection
+# ---------------------------------------------------------------------------
+me:
+  rocketchat:
+    user_id: "${RC_USER_ID}"   # same value as auth credential above
+    username: "alice"           # plain username, no @ — used for mention scanning
+
+  teams:
+    # Your personal Azure AD / Entra object ID (NOT the app client_id above).
+    # Find it: Azure Portal → Azure AD → Users → your account → Object ID
+    user_id: "${TEAMS_ME_USER_ID}"
+    display_name: "Alice Smith"  # used as fallback for mention text-scanning
+
+# ---------------------------------------------------------------------------
+# Thread tracking behaviour
+# ---------------------------------------------------------------------------
+tracking:
+  # Threads idle for this many days are flagged 'aged_out' in Postgres.
+  # Nothing is deleted automatically. Run with --prune to review and delete.
+  thread_age_out_days: 90
+
+  # On first run for a channel (no prior state), look back this many days
+  # specifically for threads the user started. Subsequent runs use state.json.
+  first_run_lookback_days: 90
+
+archive:
+  enabled: true
+  host: "${POSTGRES_HOST}"        # "postgres" inside Docker Compose, "localhost" outside
+  port: 5432
+  database: "${POSTGRES_DB}"
+  user: "${POSTGRES_USER}"
+  password: "${POSTGRES_PASSWORD}"
+  retention_days: 90
+
+state:
+  state_file: "./state.json"
+
+logging:
+  level: "info"
+  log_file: "./logs/summarizer.log"
