@@ -102,14 +102,12 @@ tracking:
 archive:
   enabled: true
   host: "${POSTGRES_HOST}"        # "postgres" inside Docker Compose, "localhost" outside
-  port: 5432
+  port: 5433
   database: "${POSTGRES_DB}"
   user: "${POSTGRES_USER}"
   password: "${POSTGRES_PASSWORD}"
   retention_days: 90
 
-state:
-  state_file: "./state.json"
 
 logging:
   level: "info"

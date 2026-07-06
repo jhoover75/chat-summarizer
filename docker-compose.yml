@@ -94,7 +94,7 @@ services:
 
   # MongoDB — required by Rocket.Chat (must run as a replica set)
   mongo:
-    image: mongo:6.0
+    image: mongo:8.0
     container_name: chat-summarizer-mongo
     restart: unless-stopped
     command: mongod --replSet rs0 --oplogSize 128
@@ -112,7 +112,7 @@ services:
   # Safe to re-run: the rs.initiate() call is wrapped in a try/catch so it is
   # a no-op if the replica set is already configured.
   mongo-init-replica:
-    image: mongo:6.0
+    image: mongo:8.0
     container_name: chat-summarizer-mongo-init
     restart: "no"
     depends_on:
@@ -127,11 +127,20 @@ services:
   # Rocket.Chat — accessible at http://localhost:3000 from the host browser
   # and at http://rocketchat:3000 from within the Docker network (app service).
   #
-  # On first start, complete the setup wizard at http://localhost:3000 to create
-  # the admin account.  Then create a test user and issue a Personal Access Token
-  # for that user (see README.md — Testing with a local Rocket.Chat instance).
+  # The admin account is auto-provisioned (see ADMIN_* below). On first start
+  # the setup wizard may still appear and try to email a Cloud-registration
+  # security code, which never arrives for admin@localhost — just skip/ignore
+  # that screen and reload the root URL; it drops you straight into the
+  # normal login page since the account already exists. See README.md —
+  # Testing with a local Rocket.Chat instance.
+  #
+  # Pinned (not :latest): Rocket.Chat's minimum-supported MongoDB version keeps
+  # rising, and mongo/mongo-init-replica below must satisfy whatever version
+  # this pin requires. If you bump this image, check Rocket.Chat's MongoDB
+  # compatibility requirements and bump the mongo images to match, or the
+  # container will crash-loop with a "MongoDB version not supported" error.
   rocketchat:
-    image: rocket.chat:latest
+    image: rocket.chat:8.5.1
     container_name: chat-summarizer-rocketchat
     restart: unless-stopped
     depends_on:
@@ -140,17 +149,25 @@ services:
       mongo-init-replica:
         condition: service_completed_successfully
     ports:
-      - "3000:3000"
+      - "3030:3000"
     environment:
-      ROOT_URL: http://localhost:3000
+      # The ROOT_URL should match the IP address of the host machine.
+      ROOT_URL: http://192.168.1.26:3030
       PORT: "3000"
       MONGO_URL: mongodb://mongo:27017/rocketchat?replicaSet=rs0
       MONGO_OPLOG_URL: mongodb://mongo:27017/local?replicaSet=rs0
-      # Uncomment the three lines below to skip the setup wizard on first start.
-      # Rocket.Chat 6+ only. Remove after the initial admin account is created.
-      #ADMIN_USERNAME: admin
-      #ADMIN_EMAIL: admin@localhost
-      #ADMIN_PASS: changeme
+      # Auto-provisions the admin account on first boot, skipping the manual
+      # "Admin Info" wizard step. Safe to leave in place indefinitely; it's a
+      # no-op once the account exists.
+      ADMIN_USERNAME: admin
+      ADMIN_EMAIL: admin@localhost
+      ADMIN_PASS: admin
+      # Forces the wizard straight to "completed" on every boot (fresh volume
+      # or not), skipping the Cloud-registration screen. That screen emails a
+      # verification "security code" via Rocket.Chat Cloud to confirm the
+      # admin email, which never arrives for a fake local address like
+      # admin@localhost and otherwise blocks setup entirely.
+      OVERWRITE_SETTING_Show_Setup_Wizard: completed
     profiles: [testing]
 
 volumes:
