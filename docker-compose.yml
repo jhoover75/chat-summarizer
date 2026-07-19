@@ -28,30 +28,30 @@ services:
   # Ollama — local LLM inference server
   # Pull model first: docker compose run --rm ollama ollama pull llama3.1:8b
   # -------------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest
-    container_name: chat-summarizer-ollama
-    restart: "no"
-    ports:
-      - "11434:11434"
-    volumes:
-      - ./ollama-models:/root/.ollama
-    environment:
-      - OLLAMA_KEEP_ALIVE=0
-    # Remove the 'deploy' block if running CPU-only (no NVIDIA GPU)
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
+  # ollama:
+  #   image: ollama/ollama:latest
+  #   container_name: chat-summarizer-ollama
+  #   restart: "no"
+  #   ports:
+  #     - "11434:11434"
+  #   volumes:
+  #     - ./ollama-models:/root/.ollama
+  #   environment:
+  #     - OLLAMA_KEEP_ALIVE=0
+  #   # Remove the 'deploy' block if running CPU-only (no NVIDIA GPU)
+  #   deploy:
+  #     resources:
+  #       reservations:
+  #         devices:
+  #           - driver: nvidia
+  #             count: 1
+  #             capabilities: [gpu]
+  #   healthcheck:
+  #     test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s
 
   # -------------------------------------------------------------------------
   # chat-summarizer — Python application (runs once and exits)
@@ -70,8 +70,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      ollama:
-        condition: service_healthy
+      # ollama:
+      #   condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./summaries:/app/summaries
@@ -94,10 +94,15 @@ services:
 
   # MongoDB — required by Rocket.Chat (must run as a replica set)
   mongo:
-    image: mongo:8.0
+    image: mongo:8.3.4
     container_name: chat-summarizer-mongo
     restart: unless-stopped
     command: mongod --replSet rs0 --oplogSize 128
+    # Works around a MongoDB 8.x crash on Linux kernel 6.19+: the bundled
+    # TCMalloc violates the kernel's rseq ABI. Remove once MongoDB ships a
+    # patched TCMalloc. See https://jira.mongodb.org/browse/SERVER-121912
+    environment:
+      GLIBC_TUNABLES: "glibc.pthread.rseq=1"
     volumes:
       - mongo-data:/data/db
     healthcheck:
@@ -112,7 +117,7 @@ services:
   # Safe to re-run: the rs.initiate() call is wrapped in a try/catch so it is
   # a no-op if the replica set is already configured.
   mongo-init-replica:
-    image: mongo:8.0
+    image: mongo:8.3.4
     container_name: chat-summarizer-mongo-init
     restart: "no"
     depends_on:
@@ -124,8 +129,10 @@ services:
        catch(e) { rs.initiate({_id:'rs0',members:[{_id:0,host:'mongo:27017'}]}); print('replica set initialised') }"
     profiles: [testing]
 
-  # Rocket.Chat — accessible at http://localhost:3000 from the host browser
-  # and at http://rocketchat:3000 from within the Docker network (app service).
+  # Rocket.Chat — no host port of its own. Reached at https://localhost:3030
+  # from the host browser via the rocketchat-proxy TLS proxy below, and at
+  # http://rocketchat:3000 (plain, unproxied) from within the Docker network
+  # (app service).
   #
   # The admin account is auto-provisioned (see ADMIN_* below). On first start
   # the setup wizard may still appear and try to email a Cloud-registration
@@ -148,11 +155,10 @@ services:
         condition: service_healthy
       mongo-init-replica:
         condition: service_completed_successfully
-    ports:
-      - "3030:3000"
     environment:
-      # The ROOT_URL should match the IP address of the host machine.
-      ROOT_URL: http://192.168.1.26:3030
+      # Points at the HTTPS proxy below, which is now the only host-facing
+      # entry point.
+      ROOT_URL: https://192.168.1.26:3030
       PORT: "3000"
       MONGO_URL: mongodb://mongo:27017/rocketchat?replicaSet=rs0
       MONGO_OPLOG_URL: mongodb://mongo:27017/local?replicaSet=rs0
@@ -168,8 +174,67 @@ services:
       # admin email, which never arrives for a fake local address like
       # admin@localhost and otherwise blocks setup entirely.
       OVERWRITE_SETTING_Show_Setup_Wizard: completed
+      # Rocket.Chat defaults to requiring 2FA confirmation (TOTP or email) for
+      # sensitive account actions like changing a password, even via the admin
+      # API. The admin account here has no 2FA method configured (its email,
+      # admin@localhost, can't receive a code either), so that requirement is
+      # permanently unsatisfiable and locks the admin out of those actions
+      # entirely. Harmless to disable for this throwaway local test instance.
+      OVERWRITE_SETTING_Accounts_TwoFactorAuthentication_Enabled: "false"
+      # Default API rate limit here is 10 calls/60s, which is far too tight
+      # for scripts/seed_rocketchat.py (~100+ calls to create test data).
+      # Fine to disable entirely on a throwaway local test instance.
+      OVERWRITE_SETTING_API_Enable_Rate_Limiter: "false"
+    profiles: [testing]
+
+  # One-shot container that generates a self-signed TLS certificate for
+  # rocketchat-proxy into the rocketchat-proxy-certs volume, if one doesn't
+  # already exist. Safe to re-run — existing certs are left in place.
+  rocketchat-proxy-cert-init:
+    image: alpine:3.20
+    container_name: chat-summarizer-rocketchat-proxy-cert-init
+    restart: "no"
+    volumes:
+      - rocketchat-proxy-certs:/certs
+    command:
+      - sh
+      - -c
+      - |
+        set -e
+        if [ -f /certs/rocketchat.crt ]; then
+          echo "Certificate already exists, skipping."
+        else
+          apk add --no-cache openssl >/dev/null
+          openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
+            -keyout /certs/rocketchat.key -out /certs/rocketchat.crt \
+            -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:192.168.1.26"
+          echo "Generated self-signed certificate for rocketchat-proxy."
+        fi
+    profiles: [testing]
+
+  # TLS-terminating reverse proxy in front of Rocket.Chat. This is the only
+  # host-facing entry point for Rocket.Chat now — https://localhost:3030.
+  # Browsers will show a self-signed-certificate warning on first visit;
+  # that's expected for a local test instance, click through it (or import
+  # the generated cert from the rocketchat-proxy-certs volume as trusted).
+  rocketchat-proxy:
+    image: nginx:1.27-alpine
+    container_name: chat-summarizer-rocketchat-proxy
+    restart: unless-stopped
+    depends_on:
+      rocketchat-proxy-cert-init:
+        condition: service_completed_successfully
+      rocketchat:
+        condition: service_started
+    ports:
+      - "3030:443"
+    volumes:
+      - ./nginx/rocketchat.conf:/etc/nginx/conf.d/default.conf:ro
+      - rocketchat-proxy-certs:/certs:ro
     profiles: [testing]
 
 volumes:
-  postgres-data:    # Persists Postgres data across container restarts and rebuilds
-  mongo-data:       # Persists Rocket.Chat's MongoDB data across restarts
+  postgres-data:          # Persists Postgres data across container restarts and rebuilds
+  mongo-data:             # Persists Rocket.Chat's MongoDB data across restarts
+  rocketchat-proxy-certs: # Self-signed TLS cert/key for the local Rocket.Chat HTTPS proxy
