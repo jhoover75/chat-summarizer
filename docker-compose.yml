@@ -66,6 +66,13 @@ services:
       dockerfile: Dockerfile
     container_name: chat-summarizer-app
     restart: "no"
+    # Runs as the invoking host user instead of the image's baked-in
+    # `summarizer` user, so files written to the bind-mounted ./summaries
+    # and ./logs are owned by you, not root or an unrelated container UID.
+    # $UID can't be exported (it's a read-only bash builtin), hence the
+    # differently-named APP_UID/APP_GID here — set them before running:
+    # export APP_UID=$(id -u) APP_GID=$(id -g)
+    user: "${APP_UID:-1000}:${APP_GID:-1000}"
     depends_on:
       postgres:
         condition: service_healthy
@@ -75,10 +82,27 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./summaries:/app/summaries
       - ./logs:/app/logs
+      # Empty/absent in production (no cert-init service runs outside the
+      # testing profile) — src/sources/rocketchat.py falls back to normal
+      # CA verification when the file isn't there. Populated when the local
+      # testing stack's rocketchat-proxy-cert-init has run, letting this
+      # container trust that self-signed cert when RC_URL/RC_PORT point at
+      # the HTTPS proxy.
+      - rocketchat-proxy-certs:/rc-certs:ro
     env_file:
       - .env
     environment:
       - PYTHONUNBUFFERED=1
+      # .env's POSTGRES_PORT is the *host-external* port mapping (postgres
+      # service's `ports:` below) — Postgres always listens on 5432 inside
+      # the container regardless of that remap. This container talks to
+      # postgres over the internal Docker network, so it needs the real
+      # internal port, not whatever POSTGRES_PORT happens to be on the host.
+      # Overriding here (rather than in config.yaml's archive.port) keeps
+      # config.yaml correct for the "run outside Docker" case documented on
+      # archive.host, where POSTGRES_PORT's host-external meaning is right.
+      - POSTGRES_PORT=5432
+      - RC_CA_BUNDLE=/rc-certs/rocketchat.crt
 
   # -------------------------------------------------------------------------
   # ---- TESTING PROFILE ----------------------------------------------------

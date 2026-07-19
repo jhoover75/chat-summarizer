@@ -16,8 +16,10 @@ See DESIGN.md §4, §5, §8 for configuration and auth details.
 from __future__ import annotations
 
 import json
+import os
 import re
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import httpx
@@ -43,6 +45,14 @@ class RocketChatSource(ChatSource):
     def __init__(self, config: "RocketChatConfig", db=None):
         self._config = config
         self._db = db
+        # RC_CA_BUNDLE points at a self-signed cert to trust (set only by
+        # docker-compose.yml's local testing profile, which fronts Rocket.Chat
+        # with an HTTPS proxy using a generated cert). Absent in production,
+        # where the standard trusted CA chain is used as normal.
+        ca_bundle = os.environ.get("RC_CA_BUNDLE")
+        verify: bool | str = True
+        if ca_bundle and Path(ca_bundle).exists():
+            verify = ca_bundle
         self._client = httpx.Client(
             base_url=config.url,
             headers={
@@ -51,6 +61,7 @@ class RocketChatSource(ChatSource):
                 "Content-Type": "application/json",
             },
             timeout=30,
+            verify=verify,
         )
         # 2 requests/second — well within Rocket.Chat's default 200 req/60s limit
         self._limiter = TokenBucketRateLimiter(rate=2.0, capacity=5.0)
@@ -96,24 +107,39 @@ class RocketChatSource(ChatSource):
         else:
             since_dt = datetime.fromisoformat(since_ts.replace("Z", "+00:00"))
 
-        oldest = since_dt.strftime("%Y-%m-%dT%H:%M:%S.000Z")
         messages: list[Message] = []
         offset = 0
 
+        # channels.messages in this Rocket.Chat version rejects the documented
+        # `oldest` param outright, and its `query` param is a no-op for
+        # filtering (verified: even a query matching nothing returns
+        # everything) — so date filtering happens client-side here instead.
+        # Results come back newest-first, so once a page has a message older
+        # than since_dt, every later page is older still and we can stop.
         while True:
             self._limiter.acquire()
-            data = self._get_messages(channel_config.name, oldest, offset)
+            data = self._get_messages(channel_config.name, offset)
             batch = data.get("messages", [])
             if not batch:
                 break
 
+            reached_cutoff = False
             for raw in batch:
                 msg = self._parse_message(raw, channel_config.name)
-                if msg:
-                    messages.append(msg)
+                if msg is None:
+                    continue
+                msg_dt = _parse_ts(msg.timestamp)
+                if msg_dt is not None and msg_dt < since_dt:
+                    reached_cutoff = True
+                    continue
+                messages.append(msg)
 
             offset += len(batch)
-            if offset >= self._config.max_messages_per_run or len(batch) < self._config.page_size:
+            if (
+                reached_cutoff
+                or offset >= self._config.max_messages_per_run
+                or len(batch) < self._config.page_size
+            ):
                 break
 
         return sorted(messages, key=lambda m: m.timestamp)
@@ -298,12 +324,12 @@ class RocketChatSource(ChatSource):
     # ── internal helpers ──────────────────────────────────────────────────────
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=2, max=30))
-    def _get_messages(self, room_name: str, oldest: str, offset: int) -> dict:
+    def _get_messages(self, room_name: str, offset: int) -> dict:
+        room_id = self._resolve_room_id(room_name)
         resp = self._client.get(
             "/api/v1/channels.messages",
             params={
-                "roomName": room_name,
-                "oldest": oldest,
+                "roomId": room_id,
                 "count": self._config.page_size,
                 "offset": offset,
             },

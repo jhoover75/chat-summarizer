@@ -81,8 +81,11 @@ output:
 # ---------------------------------------------------------------------------
 me:
   rocketchat:
-    user_id: "${RC_USER_ID}"   # same value as auth credential above
-    username: "alice"           # plain username, no @ — used for mention scanning
+    # Log in as this user and check My Account → Security → Personal Access
+    # Tokens (shown when generating a token), or log in via POST /api/v1/login
+    # and read data.userId from the response. Same value as auth credential above.
+    user_id: "${RC_USER_ID}"
+    username: "testuser"        # plain username, no @ — used for mention scanning
 
   teams:
     # Your personal Azure AD / Entra object ID (NOT the app client_id above).

@@ -108,6 +108,8 @@ POSTGRES_USER=summarizer
 POSTGRES_PASSWORD=change_me_in_production
 ```
 
+> **Optional — custom CA bundle:** if your Rocket.Chat instance uses a self-signed or internal-CA certificate rather than one from a publicly trusted CA, set `RC_CA_BUNDLE` in `.env` to the path of a CA bundle file *inside the app container* for the app to trust when connecting to `RC_URL`. Since it's an in-container path, you'll also need to bind-mount the actual cert file to that path in `docker-compose.yml`'s `app` service — e.g. `- ./my-ca.crt:/certs/my-ca.crt:ro` alongside `RC_CA_BUNDLE=/certs/my-ca.crt`. Not needed against a normally CA-signed instance. (The local testing stack below already wires this up automatically for its own self-signed proxy cert — no action needed there.)
+
 ### 2. Edit `config.yaml`
 
 `config.yaml` is gitignored (like `.env`) — it's your personal copy made from `config.yaml.example` above, so local edits never get committed. Open it and make three edits:
@@ -181,9 +183,14 @@ docker compose ps
 
 ### 5. Run
 
+The `app` container runs as your host user rather than a fixed user baked into the image, so files it writes under `./summaries/` and `./logs/` end up owned by you instead of some unrelated container UID. For that to work, export `APP_UID`/`APP_GID` before running — **not** `UID`/`GID`; `$UID` is a read-only bash builtin and can't be exported:
+
 ```bash
+export APP_UID=$(id -u) APP_GID=$(id -g)
 docker compose run --rm app
 ```
+
+If unset, both default to `1000`, which is right for most single-user Linux setups but may not match yours — run `id -u` / `id -g` to check. Add the `export` line to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) so you don't need to repeat it every session; every `docker compose run --rm app` invocation in this README (and in cron, below) needs it set.
 
 On first run, the tool looks back `first_run_lookback_days` for threads you started. Subsequent runs process only activity since the last run (tracked in `state.json`).
 
@@ -191,10 +198,10 @@ Summaries appear in `./summaries/`. Logs go to `./logs/summarizer.log`.
 
 ### 6. Schedule with cron
 
-Add a crontab entry to run automatically. Every 30 minutes is a reasonable starting point:
+Add a crontab entry to run automatically. Every 30 minutes is a reasonable starting point. Cron runs jobs with a minimal environment — it won't have `APP_UID`/`APP_GID` from your shell profile, so set them inline in the crontab entry itself, replacing `1000`/`1000` below with your own `id -u`/`id -g` output:
 
 ```cron
-*/30 * * * * cd /path/to/chat-summarizer && docker compose run --rm app >> /path/to/chat-summarizer/logs/cron.log 2>&1
+*/30 * * * * export APP_UID=1000 APP_GID=1000; cd /path/to/chat-summarizer && docker compose run --rm app >> /path/to/chat-summarizer/logs/cron.log 2>&1
 ```
 
 > **Note:** Never pass `--prune` to a cron job. The prune command requires interactive TTY input.
@@ -268,6 +275,8 @@ docker compose up -d postgres
 Skip the `ollama` service entirely. You can also remove or comment it out of `docker-compose.yml` to avoid accidentally starting it.
 
 ### Step 4 — Run as usual
+
+Remember `APP_UID`/`APP_GID` still need to be exported (see [Run](#5-run) above) if they aren't already:
 
 ```bash
 docker compose run --rm app
@@ -399,6 +408,8 @@ Alternatively, seed data manually. Log back into Rocket.Chat as `testuser` and c
 3. Optionally log in as a second browser session as `admin` and reply to the same thread to simulate other participants.
 
 ### Run the summarizer against the local instance
+
+Remember `APP_UID`/`APP_GID` still need to be exported (see [Run](#5-run) above) if they aren't already:
 
 ```bash
 docker compose --profile testing run --rm app
