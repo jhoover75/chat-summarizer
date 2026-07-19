@@ -165,8 +165,9 @@ chat-summarizer/
 rocketchat:
   enabled: true
 
-  # Base URL of your Rocket.Chat instance (no trailing slash)
-  url: "https://chat.example.com"
+  # Base URL of your Rocket.Chat instance (no trailing slash). Set RC_URL
+  # (scheme + host, no port) and RC_PORT in .env.
+  url: "${RC_URL}:${RC_PORT}"
 
   # Personal Access Token credentials.
   # Generate in RC: My Account → Security → Personal Access Tokens

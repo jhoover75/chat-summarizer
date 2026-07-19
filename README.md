@@ -80,12 +80,15 @@ git clone https://github.com/your-org/chat-summarizer.git
 cd chat-summarizer
 
 cp .env.example .env
+cp config.yaml.example config.yaml
 ```
 
 Open `.env` and fill in your credentials:
 
 ```bash
-# Rocket.Chat — generate at: My Account → Security → Personal Access Tokens
+# Rocket.Chat — base URL + port, and a token generated at: My Account → Security → Personal Access Tokens
+RC_URL=https://your-rocketchat.example.com
+RC_PORT=3030
 RC_USER_ID=your_rocketchat_user_id
 RC_AUTH_TOKEN=your_personal_access_token
 
@@ -107,14 +110,14 @@ POSTGRES_PASSWORD=change_me_in_production
 
 ### 2. Edit `config.yaml`
 
-Open `config.yaml` and make three edits:
+`config.yaml` is gitignored (like `.env`) — it's your personal copy made from `config.yaml.example` above, so local edits never get committed. Open it and make three edits:
 
 **a) Set the channels you want to monitor:**
 
 ```yaml
 rocketchat:
   enabled: true
-  url: "https://your-rocketchat.example.com"
+  url: "${RC_URL}:${RC_PORT}"   # set RC_URL and RC_PORT in .env, above
   channels:
     - name: "general"
     - name: "engineering"
@@ -349,19 +352,21 @@ The summarizer authenticates with Rocket.Chat using a Personal Access Token tied
 
 ### Configure the summarizer
 
-Update `.env` with the test credentials:
+Update `.env` with the test credentials. `RC_URL`/`RC_PORT` should point at Rocket.Chat's internal Docker network hostname, not the HTTPS proxy — the app container reaches Rocket.Chat directly at `http://rocketchat:3000`, bypassing `rocketchat-proxy` entirely (that proxy exists only for host-browser access):
 
 ```bash
+RC_URL=http://rocketchat
+RC_PORT=3000
 RC_USER_ID=<User ID copied above>
 RC_AUTH_TOKEN=<Token copied above>
 ```
 
-Update `config.yaml` to point at the local instance. When the app runs inside Docker Compose, it reaches Rocket.Chat via the internal service hostname:
+`config.yaml` already picks this up automatically via `${RC_URL}:${RC_PORT}`, no edit needed there:
 
 ```yaml
 rocketchat:
   enabled: true
-  url: "http://rocketchat:3000"
+  url: "${RC_URL}:${RC_PORT}"
   user_id: "${RC_USER_ID}"
   auth_token: "${RC_AUTH_TOKEN}"
   channels:
@@ -419,7 +424,7 @@ The `-v` flag removes the `mongo-data` and `rocketchat-proxy-certs` volumes (the
 chat-summarizer/
 ├── docker-compose.yml      # Postgres + Ollama + app
 ├── Dockerfile
-├── config.yaml             # Main configuration (edit this)
+├── config.yaml.example     # Configuration template (copy to config.yaml and edit)
 ├── .env.example            # Secrets template (copy to .env)
 ├── requirements.txt
 ├── DESIGN.md               # Full architecture document

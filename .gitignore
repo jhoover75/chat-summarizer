@@ -1,5 +1,6 @@
-# Secrets — never commit
+# Secrets / personal config — never commit
 .env
+config.yaml
 
 # Generated outputs
 summaries/

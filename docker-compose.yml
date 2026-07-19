@@ -1,4 +1,3 @@
-version: "3.9"
 
 services:
 
@@ -157,8 +156,9 @@ services:
         condition: service_completed_successfully
     environment:
       # Points at the HTTPS proxy below, which is now the only host-facing
-      # entry point.
-      ROOT_URL: https://192.168.1.26:3030
+      # entry point. Built from RC_URL and RC_PORT in .env.
+      ROOT_URL: "${RC_URL}:${RC_PORT}"
+      # Defines the internal port the NodesJS will bind to when starting the service.
       PORT: "3000"
       MONGO_URL: mongodb://mongo:27017/rocketchat?replicaSet=rs0
       MONGO_OPLOG_URL: mongodb://mongo:27017/local?replicaSet=rs0
@@ -194,6 +194,11 @@ services:
     image: alpine:3.20
     container_name: chat-summarizer-rocketchat-proxy-cert-init
     restart: "no"
+    environment:
+      # Pulled from .env (Compose auto-loads it for interpolation). Its host
+      # is added to the cert's SAN list alongside the usual localhost
+      # entries, so the cert stays valid whatever RC_URL points at.
+      RC_URL: "${RC_URL}"
     volumes:
       - rocketchat-proxy-certs:/certs
     command:
@@ -205,11 +210,22 @@ services:
           echo "Certificate already exists, skipping."
         else
           apk add --no-cache openssl >/dev/null
+          # Strip scheme, path, and port from RC_URL to get just the host.
+          # Doubled dollar signs below are literal, passed through to the
+          # container's shell — Compose interpolates variables in this file
+          # too, so single dollar signs here would be (wrongly) resolved by
+          # Compose itself rather than by sh at container runtime.
+          rc_host=$$(echo "$${RC_URL:-localhost}" | sed -E 's#^[a-zA-Z][a-zA-Z0-9+.-]*://##; s#/.*##; s#:[0-9]+$##')
+          if echo "$$rc_host" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$'; then
+            rc_san="IP:$$rc_host"
+          else
+            rc_san="DNS:$$rc_host"
+          fi
           openssl req -x509 -nodes -newkey rsa:2048 -days 825 \
             -keyout /certs/rocketchat.key -out /certs/rocketchat.crt \
-            -subj "/CN=localhost" \
-            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:192.168.1.26"
-          echo "Generated self-signed certificate for rocketchat-proxy."
+            -subj "/CN=$$rc_host" \
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,$$rc_san"
+          echo "Generated self-signed certificate for rocketchat-proxy (CN=$$rc_host)."
         fi
     profiles: [testing]
 

@@ -1,10 +1,13 @@
 # chat-summarizer configuration
+# Copy this file to config.yaml and personalize it — config.yaml is
+# gitignored so your channel list, tracking settings, and other local
+# customizations never get committed.
 # See DESIGN.md §4 for full field documentation.
 # Copy .env.example to .env and fill in your secrets before running.
 
 rocketchat:
   enabled: true
-  url: "https://chat.example.com"
+  url: "${RC_URL}:${RC_PORT}"
   user_id: "${RC_USER_ID}"
   auth_token: "${RC_AUTH_TOKEN}"
   channels:
@@ -102,7 +105,7 @@ tracking:
 archive:
   enabled: true
   host: "${POSTGRES_HOST}"        # "postgres" inside Docker Compose, "localhost" outside
-  port: 5433
+  port: "${POSTGRES_PORT}"
   database: "${POSTGRES_DB}"
   user: "${POSTGRES_USER}"
   password: "${POSTGRES_PASSWORD}"
