@@ -207,6 +207,38 @@ def run_normal(conn, config, run_id: str) -> int:
                     channel_config, messages, config.me, followed_ids
                 )
 
+                # A reply may arrive after the app missed our earlier reply.
+                # For each such untracked thread, inspect its complete history.
+                # If it contains a reply from us, adopt it now and retain this
+                # backfill for the initial archive write below.
+                prefetched_backfills = {}
+                candidate_ids = {thread.thread_id for thread in candidates}
+                untracked_reply_ids = {
+                    message.thread_id
+                    for message in messages
+                    if message.thread_id
+                    and message.thread_id not in existing_threads
+                    and message.thread_id not in candidate_ids
+                }
+                for thread_id in untracked_reply_ids:
+                    history = source.fetch_thread_messages(channel_config, thread_id)
+                    history_candidates = source.discover_eligible_threads(
+                        channel_config, history, config.me, followed_ids
+                    )
+                    replied_candidate = next(
+                        (
+                            thread
+                            for thread in history_candidates
+                            if thread.thread_id == thread_id and thread.reason == "replied"
+                        ),
+                        None,
+                    )
+                    if replied_candidate:
+                        candidates.append(replied_candidate)
+                        prefetched_backfills[thread_id] = history
+                        candidate_ids.add(thread_id)
+                        log.info("thread_adopted_from_reply", thread_id=thread_id)
+
                 log.info(
                     "channel_discovered",
                     key=key,
@@ -220,9 +252,13 @@ def run_normal(conn, config, run_id: str) -> int:
                     if thread.thread_id not in existing_threads:
                         # 4d — first discovery: backfill full thread history
                         log.info("thread_backfill", thread_id=thread.thread_id)
-                        thread_messages_to_store = source.fetch_thread_messages(
-                            channel_config, thread.thread_id
+                        thread_messages_to_store = prefetched_backfills.get(
+                            thread.thread_id
                         )
+                        if thread_messages_to_store is None:
+                            thread_messages_to_store = source.fetch_thread_messages(
+                                channel_config, thread.thread_id
+                            )
                     else:
                         # 4e — already tracked: store only new messages from this window
                         thread_messages_to_store = _messages_for_thread(
@@ -248,6 +284,45 @@ def run_normal(conn, config, run_id: str) -> int:
                                 thread.thread_id,
                                 latest_dt,
                             )
+
+                # A tracked thread stays tracked when another person replies.
+                # Their reply will not necessarily mention or be authored by us,
+                # so it will not appear in `candidates` above. Archive it based
+                # on the existing tracked-thread record instead, allowing Step 5
+                # to append it to raw.md and regenerate summary.md.
+                candidate_ids = {thread.thread_id for thread in candidates}
+                for thread in existing_threads.values():
+                    if (
+                        thread.platform != source.PLATFORM
+                        or thread.channel != _channel_name(channel_config)
+                        or thread.status != "active"
+                        or thread.thread_id in candidate_ids
+                    ):
+                        continue
+
+                    new_thread_messages = _messages_for_thread(
+                        messages, thread.thread_id
+                    )
+                    if not new_thread_messages:
+                        continue
+
+                    upsert_messages(conn, new_thread_messages)
+                    latest_dt = _parse_ts(
+                        max(message.timestamp for message in new_thread_messages)
+                    )
+                    if latest_dt:
+                        update_thread_activity(
+                            conn,
+                            thread.platform,
+                            thread.channel,
+                            thread.thread_id,
+                            latest_dt,
+                        )
+                    log.info(
+                        "tracked_thread_updated",
+                        thread_id=thread.thread_id,
+                        messages=len(new_thread_messages),
+                    )
 
                 # 4g — advance the per-channel cursor in Postgres
                 upsert_channel_state(conn, key, messages[-1].timestamp)

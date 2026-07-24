@@ -64,7 +64,8 @@ class ChatSource(ABC):
     ) -> list["Message"]:
         """
         Fetch the complete message history for a specific thread.
-        Used for initial backfill when a thread is first discovered.
+        Used for initial backfill when a thread is first discovered. The
+        returned list includes the top-level post and all replies.
         Returns messages sorted ascending by timestamp.
         """
         ...

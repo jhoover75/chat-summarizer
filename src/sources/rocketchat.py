@@ -188,10 +188,30 @@ class RocketChatSource(ChatSource):
     ) -> list[Message]:
         """
         Fetch the complete message history for a specific thread.
-        Uses GET /api/v1/chat.getThreadMessages?tmid=<thread_id>.
+        Uses GET /api/v1/chat.getMessage for the top-level post, then
+        GET /api/v1/chat.getThreadMessages?tmid=<thread_id> for replies.
         Returns messages in ascending timestamp order.
         """
         messages: list[Message] = []
+
+        # chat.getThreadMessages returns replies only. Fetch the parent
+        # separately so the transcript and LLM context start with the post
+        # the replies are discussing.
+        self._limiter.acquire()
+        root_resp = self._client.get(
+            "/api/v1/chat.getMessage",
+            params={"msgId": thread_id},
+        )
+        root_resp.raise_for_status()
+        root_msg = self._parse_message(
+            root_resp.json().get("message", {}), channel_config.name
+        )
+        if root_msg:
+            # Top-level Rocket.Chat messages do not have a tmid. Store this
+            # one under its own ID so it belongs to the archived thread.
+            root_msg.thread_id = thread_id
+            messages.append(root_msg)
+
         offset = 0
 
         while True:
@@ -217,7 +237,10 @@ class RocketChatSource(ChatSource):
             if len(batch) < self._config.page_size:
                 break
 
-        return sorted(messages, key=lambda m: m.timestamp)
+        # Be defensive in case a Rocket.Chat version includes the root in the
+        # replies endpoint as well.
+        unique_messages = {message.message_id: message for message in messages}
+        return sorted(unique_messages.values(), key=lambda m: m.timestamp)
 
     # ── thread eligibility detection ──────────────────────────────────────────
 
@@ -253,6 +276,9 @@ class RocketChatSource(ChatSource):
             # - If msg has no thread_id, it IS a potential thread root if it has replies
             #   (We can't know that without the tcount field; we'll collect top-level msgs
             #    that we authored or that appear as thread_ids of replies)
+            # A fetched root is normalized for archival with thread_id equal
+            # to its own message ID. Treat it as a top-level post here.
+            is_top_level = msg.thread_id is None or msg.message_id == msg.thread_id
             effective_thread_id = msg.thread_id or msg.message_id
 
             # Track the most recent activity per thread
@@ -261,12 +287,12 @@ class RocketChatSource(ChatSource):
                 last_seen[effective_thread_id] = msg.timestamp
 
             # If this is a top-level post (no tmid), record it as the thread root
-            if msg.thread_id is None:
+            if is_top_level:
                 if effective_thread_id not in top_level:
                     top_level[effective_thread_id] = msg
 
             # 'started' — user authored the top-level post
-            if msg.thread_id is None and msg.author_id == me_user_id:
+            if is_top_level and msg.author_id == me_user_id:
                 _set_reason(reasons, effective_thread_id, "started")
 
             # 'following' — platform-native signal
@@ -280,7 +306,7 @@ class RocketChatSource(ChatSource):
                 _set_reason(reasons, effective_thread_id, "mentioned")
 
             # 'replied' — user posted a reply (but didn't start the thread)
-            if msg.thread_id is not None and msg.author_id == me_user_id:
+            if not is_top_level and msg.thread_id is not None and msg.author_id == me_user_id:
                 _set_reason(reasons, msg.thread_id, "replied")
                 # Ensure the parent thread_id is represented in top_level tracking
                 if msg.thread_id not in top_level:

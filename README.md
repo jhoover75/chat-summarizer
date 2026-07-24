@@ -6,7 +6,7 @@ A self-hosted tool that monitors Rocket.Chat and Microsoft Teams for chat thread
 
 Most chat summarizers sweep entire channels. This tool is different: it tracks only the **specific threads that matter to you** — threads you started, threads you're following on the platform, and threads where you've been @mentioned or have replied. For each tracked thread it maintains:
 
-- **`raw.md`** — a cumulative, append-only verbatim transcript of every message in the thread, with timestamped section markers each time new messages arrive.
+- **`raw.md`** — a cumulative, append-only verbatim transcript beginning with the top-level post and including every thread reply, with timestamped section markers each time new messages arrive.
 - **`summary.md`** — a complete LLM-generated summary, regenerated from scratch whenever new activity appears in the thread.
 
 Output is organized on disk as:
@@ -458,6 +458,12 @@ chat-summarizer/
 ```
 
 For full documentation — including the complete database schema, Teams Azure AD setup, API rate limiting strategy, and output file format — see [DESIGN.md](DESIGN.md).
+
+Note:  Do this to run separately from docker compose
+```bash
+POSTGRES_HOST=localhost POSTGRES_PORT=5432 \
+python -m src.main --config config.yaml
+```
 
 ---
 

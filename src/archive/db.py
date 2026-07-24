@@ -488,17 +488,20 @@ def get_thread_messages(
     thread_id: str,
 ) -> list[Message]:
     """
-    Retrieve all archived messages for a thread, ordered by timestamp ascending.
+    Retrieve all archived messages for a thread, including its top-level post,
+    ordered by timestamp ascending.
     Used as the source-of-truth when regenerating summary.md.
     """
     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
             SELECT * FROM messages
-             WHERE platform = %s AND channel = %s AND thread_id = %s
+             WHERE platform = %s
+               AND channel = %s
+               AND (thread_id = %s OR message_id = %s)
              ORDER BY timestamp ASC
             """,
-            (platform, channel, thread_id),
+            (platform, channel, thread_id, thread_id),
         )
         rows = cur.fetchall()
 

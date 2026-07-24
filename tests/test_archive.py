@@ -287,3 +287,21 @@ def test_get_thread_messages_ordered(db):
     assert len(retrieved) == 3
     assert retrieved[0].timestamp < retrieved[1].timestamp < retrieved[2].timestamp
     assert retrieved[0].body == "first"
+
+
+def test_get_thread_messages_includes_top_level_post(db):
+    """The root post belongs in the transcript even though it has no thread_id."""
+    thread = make_thread(thread_id="root_msg")
+    upsert_tracked_thread(db, thread)
+
+    root = make_message("root_msg")
+    root.body = "Top-level post"
+    root.thread_id = None
+    reply = make_message("reply_msg")
+    reply.body = "Thread reply"
+    reply.thread_id = "root_msg"
+    reply.timestamp = "2026-07-05T10:00:00Z"
+    upsert_messages(db, [root, reply])
+
+    retrieved = get_thread_messages(db, "rocketchat", "general", "root_msg")
+    assert [message.body for message in retrieved] == ["Top-level post", "Thread reply"]
