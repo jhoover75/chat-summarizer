@@ -2,6 +2,7 @@
 
 from types import SimpleNamespace
 
+from src.archive.models import Message
 from src.sources.rocketchat import RocketChatSource
 
 
@@ -73,3 +74,43 @@ def test_history_with_my_reply_is_discovered_as_a_tracked_thread():
     assert threads[0].thread_id == "root"
     assert threads[0].reason == "replied"
     assert threads[0].thread_subject == "Original question"
+
+
+def test_reply_outside_window_fetches_real_root_for_subject():
+    """
+    If the fetch window contains only our reply — not the top-level post it
+    replies to (e.g. the root predates since_ts) — discover_eligible_threads
+    must fetch the real root via chat.getMessage rather than using the
+    reply's own text as thread_subject.
+    """
+    source = object.__new__(RocketChatSource)
+    source._config = SimpleNamespace(page_size=100, url="https://chat.example.test")
+    source._client = _Client()
+    source._limiter = _Limiter()
+    channel = SimpleNamespace(name="general")
+    me = SimpleNamespace(
+        rocketchat=SimpleNamespace(user_id="u2", username="bob")
+    )
+
+    reply_only = [Message(
+        message_id="reply",
+        platform="rocketchat",
+        channel="general",
+        team=None,
+        author_id="u2",
+        author_name="Bob",
+        body="A reply",
+        timestamp="2026-07-24T23:13:15.000Z",
+        thread_id="root",
+        raw_json="{}",
+    )]
+
+    threads = source.discover_eligible_threads(channel, reply_only, me, set())
+
+    assert len(threads) == 1
+    assert threads[0].thread_id == "root"
+    assert threads[0].reason == "replied"
+    assert threads[0].thread_subject == "Original question"
+    assert source._client.calls[0] == (
+        "/api/v1/chat.getMessage", {"msgId": "root"}
+    )

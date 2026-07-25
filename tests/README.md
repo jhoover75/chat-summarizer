@@ -70,24 +70,48 @@ docker stop chat-summarizer-test-pg
 
 ### Option B — reuse the Docker Compose Postgres service
 
-If you already have the project's normal `postgres` service running (`docker compose up -d postgres`), you can run the integration tests against it directly. The Compose service is exposed on `localhost:5432`.
+If you already have the project's normal `postgres` service running (`docker compose up -d postgres`), you can run the integration tests against it directly. The Compose service's **host-side** port comes from `POSTGRES_PORT` in `.env` — it is not necessarily `5432`. Check your `.env` before assuming the default:
 
-Create a separate test database so test data is isolated from any real data:
+```bash
+grep POSTGRES_PORT .env
+```
+
+Create a separate test database so test data is isolated from any real data (this runs *inside* the container over the Compose network, so the host-side port doesn't matter here):
 
 ```bash
 docker compose exec postgres \
   psql -U "${POSTGRES_USER}" -c "CREATE DATABASE test_chat_summarizer;"
 ```
 
-Then run the tests:
+Then run the tests, substituting your `.env`'s actual `POSTGRES_PORT`:
 
 ```bash
 POSTGRES_HOST=localhost \
+POSTGRES_PORT=5433 \
 POSTGRES_DB=test_chat_summarizer \
 POSTGRES_USER="${POSTGRES_USER}" \
 POSTGRES_PASSWORD="${POSTGRES_PASSWORD}" \
 pytest tests/test_archive.py -v
 ```
+
+#### Sourcing credentials from `.env` instead of retyping them
+
+`.env` already has `POSTGRES_PORT`, `POSTGRES_USER`, and `POSTGRES_PASSWORD` — you can source it to avoid retyping those. Two of its values need to be **overridden** after sourcing, though, since `.env` is written for the `app` container's perspective, not the host running pytest:
+
+- `POSTGRES_HOST` in `.env` is `postgres` (the Compose network hostname) — from your host shell this must be `localhost`.
+- `POSTGRES_DB` in `.env` is the real production database name — pointing tests at it would let a test wipe real data via the `db` fixture's per-test cleanup. Always override it to `test_chat_summarizer`.
+
+```bash
+set -a
+source .env
+set +a
+export POSTGRES_HOST=localhost
+export POSTGRES_DB=test_chat_summarizer
+
+pytest tests/test_archive.py -v
+```
+
+`set -a` / `set +a` marks every variable sourced from `.env` for export automatically, so pytest's subprocess sees them without prefixing each line by hand.
 
 ---
 
@@ -126,6 +150,18 @@ Run all tests at once. Integration tests skip automatically if Postgres is not c
 pytest tests/ -v
 ```
 
+To include the database tests against Compose Postgres on a non-standard port, source `.env` for credentials (overriding `POSTGRES_HOST` and `POSTGRES_DB` as described above) and run the same command:
+
+```bash
+set -a
+source .env
+set +a
+export POSTGRES_HOST=localhost
+export POSTGRES_DB=test_chat_summarizer
+
+pytest tests/ -v
+```
+
 To run only tests that do **not** require Postgres (useful in CI without a database service):
 
 ```bash
@@ -151,6 +187,8 @@ pytest tests/test_archive.py::test_flag_aged_out_threads -v
 | `POSTGRES_PASSWORD` | `test` | Database password |
 
 These can be set in your shell, in a `.env.test` file sourced before running pytest, or passed inline as shown in the examples above.
+
+If sourcing the project's own `.env` (Option B) rather than a dedicated `.env.test`, remember `POSTGRES_HOST` and `POSTGRES_DB` there are written for the `app` container, not the host — override both after sourcing (`POSTGRES_HOST=localhost`, `POSTGRES_DB=test_chat_summarizer`) so tests hit the isolated test database over the host-mapped port, not the real one.
 
 ---
 

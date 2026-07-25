@@ -2,7 +2,7 @@
 markdown_writer.py — Per-thread file writers for raw transcript and summary.
 
 Output directory: <output_dir>/<platform>/[<team>/]<channel>/<YYYY-MM-DD>/<thread_id>/
-  raw.md      — cumulative verbatim transcript (append-only sections)
+  raw.md      — complete verbatim transcript (overwritten in full each run)
   summary.md  — complete re-summary from the LLM (overwritten on each run)
 
 All file writes are atomic: content is written to a .tmp sibling then moved
@@ -22,78 +22,61 @@ if TYPE_CHECKING:
     from src.archive.models import Message, TrackedThread
 
 
-# ── raw.md — append-only transcript ──────────────────────────────────────────
+# ── raw.md — always-overwritten verbatim transcript ─────────────────────────
 
 RAW_HEADER_TEMPLATE = """\
 # Thread Transcript
 
-**Platform:** {platform}
-**Channel:** {channel}
-**Thread ID:** `{thread_id}`
-**Subject:** {subject}
-**URL:** {url}
-**Tracked since:** {tracked_since}
+<br>**Platform:** {platform}
+<br>**Channel:** {channel}
+<br>**Thread ID:** `{thread_id}`
+<br>**Subject:** {subject}
+<br>**URL:** {url}
+<br>**Tracked since:** {tracked_since}
 
 ---
 
 """
 
-RAW_SECTION_TEMPLATE = """\
-<!-- appended {timestamp} -->
 
-{messages}
-"""
-
-
-def append_raw(
+def write_raw(
     thread: "TrackedThread",
-    new_messages: list["Message"],
+    all_messages: list["Message"],
     out_dir: Path,
 ) -> Path:
     """
-    Append new_messages to <out_dir>/raw.md.
+    Write (or overwrite) <out_dir>/raw.md with the complete verbatim
+    transcript of all_messages.
 
-    If the file doesn't exist it is created with a header block, then the
-    initial messages are written. On subsequent calls only the new messages
-    are appended under a timestamped section marker.
+    This file is always regenerated in full from the complete thread history
+    stored in Postgres, so overwriting is safe and desirable — mirroring how
+    summary.md is handled.
 
     Writes are atomic via .tmp + os.replace().
 
     Returns the path to raw.md.
     """
-    if not new_messages:
+    if not all_messages:
         return out_dir / "raw.md"
 
     out_dir.mkdir(parents=True, exist_ok=True)
     raw_path = out_dir / "raw.md"
 
-    # Build the new section content
-    section_ts = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    message_lines = "".join(_format_message(m) for m in new_messages)
-    new_section = RAW_SECTION_TEMPLATE.format(
-        timestamp=section_ts,
-        messages=message_lines,
+    tracked_since_str = (
+        thread.tracked_since.strftime("%Y-%m-%dT%H:%M:%SZ")
+        if thread.tracked_since
+        else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     )
-
-    if raw_path.exists():
-        existing = raw_path.read_text(encoding="utf-8")
-        content = existing.rstrip("\n") + "\n\n" + new_section
-    else:
-        # First write — prepend the header block
-        tracked_since_str = (
-            thread.tracked_since.strftime("%Y-%m-%dT%H:%M:%SZ")
-            if thread.tracked_since
-            else datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        )
-        header = RAW_HEADER_TEMPLATE.format(
-            platform=thread.platform,
-            channel=thread.channel,
-            thread_id=thread.thread_id,
-            subject=thread.thread_subject or "(no subject)",
-            url=thread.thread_url or "(no URL)",
-            tracked_since=tracked_since_str,
-        )
-        content = header + new_section
+    header = RAW_HEADER_TEMPLATE.format(
+        platform=thread.platform,
+        channel=thread.channel,
+        thread_id=thread.thread_id,
+        subject=thread.thread_subject or "(no subject)",
+        url=thread.thread_url or "(no URL)",
+        tracked_since=tracked_since_str,
+    )
+    message_lines = "".join(_format_message(m) for m in all_messages)
+    content = header + message_lines
 
     _atomic_write(raw_path, content)
     return raw_path
@@ -124,9 +107,9 @@ model: {model}
 
 # Thread Summary
 
-**Platform:** {platform}
-**Channel:** {channel}
-**Thread:** [{subject}]({thread_url})
+<br>**Platform:** {platform}
+<br>**Channel:** {channel}
+<br>**Thread:** [{subject}]({thread_url})
 
 ---
 

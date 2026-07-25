@@ -183,6 +183,25 @@ class RocketChatSource(ChatSource):
 
     # ── per-thread backfill ───────────────────────────────────────────────────
 
+    def _fetch_root_message(
+        self, channel_config: "RocketChatChannelConfig", thread_id: str
+    ) -> Message | None:
+        """Fetch a thread's top-level post directly by ID (GET /api/v1/chat.getMessage)."""
+        self._limiter.acquire()
+        root_resp = self._client.get(
+            "/api/v1/chat.getMessage",
+            params={"msgId": thread_id},
+        )
+        root_resp.raise_for_status()
+        root_msg = self._parse_message(
+            root_resp.json().get("message", {}), channel_config.name
+        )
+        if root_msg:
+            # Top-level Rocket.Chat messages do not have a tmid. Store this
+            # one under its own ID so it belongs to the archived thread.
+            root_msg.thread_id = thread_id
+        return root_msg
+
     def fetch_thread_messages(
         self, channel_config: "RocketChatChannelConfig", thread_id: str
     ) -> list[Message]:
@@ -197,19 +216,8 @@ class RocketChatSource(ChatSource):
         # chat.getThreadMessages returns replies only. Fetch the parent
         # separately so the transcript and LLM context start with the post
         # the replies are discussing.
-        self._limiter.acquire()
-        root_resp = self._client.get(
-            "/api/v1/chat.getMessage",
-            params={"msgId": thread_id},
-        )
-        root_resp.raise_for_status()
-        root_msg = self._parse_message(
-            root_resp.json().get("message", {}), channel_config.name
-        )
+        root_msg = self._fetch_root_message(channel_config, thread_id)
         if root_msg:
-            # Top-level Rocket.Chat messages do not have a tmid. Store this
-            # one under its own ID so it belongs to the archived thread.
-            root_msg.thread_id = thread_id
             messages.append(root_msg)
 
         offset = 0
@@ -308,9 +316,14 @@ class RocketChatSource(ChatSource):
             # 'replied' — user posted a reply (but didn't start the thread)
             if not is_top_level and msg.thread_id is not None and msg.author_id == me_user_id:
                 _set_reason(reasons, msg.thread_id, "replied")
-                # Ensure the parent thread_id is represented in top_level tracking
+                # The top-level post may be outside this message window (e.g.
+                # posted before the fetch's since_ts cutoff). Fetch it
+                # directly so thread_subject reflects the real thread topic,
+                # not this reply's own text.
                 if msg.thread_id not in top_level:
-                    top_level[msg.thread_id] = msg  # placeholder; backfill will replace
+                    root_msg = self._fetch_root_message(channel_config, msg.thread_id)
+                    if root_msg:
+                        top_level[msg.thread_id] = root_msg
 
         # Build TrackedThread list
         tracked: list[TrackedThread] = []

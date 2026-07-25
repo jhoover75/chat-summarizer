@@ -60,7 +60,7 @@ from src.sources.rocketchat import RocketChatSource
 from src.sources.teams import TeamsSource
 from src.summarizer.ollama_client import OllamaClient
 from src.summarizer.prompt_builder import build_thread_prompt
-from src.output.markdown_writer import append_raw, write_summary
+from src.output.markdown_writer import write_raw, write_summary
 from src import utils
 
 log = structlog.get_logger()
@@ -351,15 +351,8 @@ def run_normal(conn, config, run_id: str) -> int:
 
             out_dir = _thread_dir(config.output.directory, thread)
 
-            # 5b — append new messages to raw.md
-            # "New" = messages not yet appended = those arriving in this run's window
-            # We use the in-memory `messages` from the channel fetch. If thread
-            # was just backfilled, all messages are "new" for raw.md purposes.
-            new_msgs = _messages_for_thread_from_db_on_backfill(
-                all_msgs, out_dir
-            )
-            if new_msgs:
-                append_raw(thread, new_msgs, out_dir)
+            # 5b — regenerate raw.md in full from the complete Postgres record
+            write_raw(thread, all_msgs, out_dir)
 
             # 5c — re-summarize from full Postgres record → overwrite summary.md
             prompt = build_thread_prompt(config.ollama, thread, all_msgs)
@@ -381,32 +374,6 @@ def run_normal(conn, config, run_id: str) -> int:
     conn.close()
     log.info("run_complete", run_id=run_id, failed=failed_channels)
     return 1 if failed_channels else 0
-
-
-def _messages_for_thread_from_db_on_backfill(all_msgs, out_dir: Path):
-    """
-    Return only the messages not yet present in raw.md.
-    Reads the existing raw.md (if any) and finds the last-appended timestamp marker,
-    then returns messages newer than that. On first write, returns all messages.
-    """
-    raw_path = out_dir / "raw.md"
-    if not raw_path.exists():
-        return all_msgs
-
-    content = raw_path.read_text(encoding="utf-8")
-    # Find the most recent <!-- appended TIMESTAMP --> marker
-    import re
-    markers = re.findall(r"<!-- appended ([^-]+?) -->", content)
-    if not markers:
-        return all_msgs  # File exists but no markers — treat as fresh
-
-    last_marker_ts = markers[-1].strip()
-    try:
-        last_dt = datetime.fromisoformat(last_marker_ts.replace("Z", "+00:00"))
-    except ValueError:
-        return all_msgs
-
-    return [m for m in all_msgs if _parse_ts(m.timestamp) and _parse_ts(m.timestamp) > last_dt]
 
 
 # ── entry point ───────────────────────────────────────────────────────────────
