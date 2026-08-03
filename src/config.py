@@ -67,18 +67,19 @@ class TeamsConfig:
 
 
 @dataclass
-class OllamaOptions:
+class OpenAIOptions:
     temperature: float = 0.3
-    num_predict: int = 1024
+    max_tokens: int = 1024
     top_p: float = 0.9
 
 
 @dataclass
-class OllamaConfig:
-    url: str
+class OpenAIConfig:
+    api_key: str
     model: str
     prompt_template: str
-    options: OllamaOptions = field(default_factory=OllamaOptions)
+    base_url: Optional[str] = None
+    options: OpenAIOptions = field(default_factory=OpenAIOptions)
     timeout_seconds: int = 120
 
 
@@ -140,7 +141,7 @@ class LoggingConfig:
 class Config:
     rocketchat: RocketChatConfig
     teams: TeamsConfig
-    ollama: OllamaConfig
+    openai: OpenAIConfig
     output: OutputConfig
     archive: ArchiveConfig
     state: StateConfig
@@ -200,16 +201,17 @@ def load_config(path: str) -> Config:
         page_size=t.get("page_size", 50),
     )
 
-    # Ollama
-    o = data.get("ollama", {})
+    # OpenAI (or any OpenAI-API-compatible inference engine)
+    o = data.get("openai", {})
     opts = o.get("options", {})
-    ollama = OllamaConfig(
-        url=o.get("url", "http://ollama:11434"),
-        model=o.get("model", "llama3.1:8b"),
+    openai_cfg = OpenAIConfig(
+        api_key=o.get("api_key", ""),
+        model=o.get("model", "gpt-4o-mini"),
         prompt_template=o.get("prompt_template", ""),
-        options=OllamaOptions(
+        base_url=o.get("base_url") or None,
+        options=OpenAIOptions(
             temperature=opts.get("temperature", 0.3),
-            num_predict=opts.get("num_predict", 1024),
+            max_tokens=opts.get("max_tokens", 1024),
             top_p=opts.get("top_p", 0.9),
         ),
         timeout_seconds=o.get("timeout_seconds", 120),
@@ -272,7 +274,7 @@ def load_config(path: str) -> Config:
     return Config(
         rocketchat=rocketchat,
         teams=teams,
-        ollama=ollama,
+        openai=openai_cfg,
         output=output,
         archive=archive,
         state=state,

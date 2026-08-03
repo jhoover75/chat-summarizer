@@ -72,7 +72,7 @@ def make_thread(
     **kwargs,
 ) -> TrackedThread:
     now = datetime.now(timezone.utc)
-    return TrackedThread(
+    fields = dict(
         platform=platform,
         channel=channel,
         team=None,
@@ -85,8 +85,9 @@ def make_thread(
         reason=reason,
         status="active",
         needs_resummary=True,
-        **kwargs,
     )
+    fields.update(kwargs)
+    return TrackedThread(**fields)
 
 
 @pytest.fixture

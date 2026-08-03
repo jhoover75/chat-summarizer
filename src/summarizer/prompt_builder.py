@@ -1,5 +1,5 @@
 """
-prompt_builder.py — Builds Ollama prompts from message groups.
+prompt_builder.py — Builds LLM prompts from message groups.
 
 Splits large message sets into chunks that fit within the token budget,
 then renders each chunk using the Jinja2 prompt_template from config.
@@ -16,7 +16,7 @@ from jinja2 import Environment
 
 if TYPE_CHECKING:
     from src.archive.models import Message, MessageGroup
-    from src.config import OllamaConfig
+    from src.config import OpenAIConfig
 
 # Conservative: assume 4 chars per token, stay well under context window
 MAX_CHARS = 6000 * 4
@@ -33,7 +33,7 @@ def format_message(msg: "Message") -> str:
 
 
 def build_prompts(
-    ollama_config: "OllamaConfig",
+    openai_config: "OpenAIConfig",
     channel_config,
     groups: list["MessageGroup"],
 ) -> list[str]:
@@ -72,7 +72,7 @@ def build_prompts(
         chunks.append(current)
 
     env = Environment()
-    template = env.from_string(ollama_config.prompt_template)
+    template = env.from_string(openai_config.prompt_template)
 
     prompts = []
     for chunk in chunks:
@@ -90,7 +90,7 @@ def build_prompts(
 
 
 def build_thread_prompt(
-    ollama_config: "OllamaConfig",
+    openai_config: "OpenAIConfig",
     thread,
     messages: list["Message"],
 ) -> str:
@@ -114,7 +114,7 @@ def build_thread_prompt(
         messages_text = messages_text[:MAX_CHARS] + "\n[... truncated for context window ...]\n"
 
     env = Environment()
-    template = env.from_string(ollama_config.prompt_template)
+    template = env.from_string(openai_config.prompt_template)
 
     channel = getattr(thread, "channel", "unknown")
     platform = getattr(thread, "platform", messages[0].platform if messages else "unknown")
