@@ -58,7 +58,7 @@ from src.archive.db import (
 from src.archive.models import TrackedThread
 from src.sources.rocketchat import RocketChatSource
 from src.sources.teams import TeamsSource
-from src.summarizer.ollama_client import OllamaClient
+from src.summarizer.openai_client import OpenAIClient
 from src.summarizer.prompt_builder import build_thread_prompt
 from src.output.markdown_writer import write_raw, write_summary
 from src import utils
@@ -333,7 +333,7 @@ def run_normal(conn, config, run_id: str) -> int:
                 failed_channels.append(key)
 
     # Step 5 — summarize threads that need it
-    ollama = OllamaClient(config.ollama)
+    llm_client = OpenAIClient(config.openai)
 
     active_threads = get_tracked_threads(conn, status="active")
     for thread in active_threads:
@@ -355,8 +355,8 @@ def run_normal(conn, config, run_id: str) -> int:
             write_raw(thread, all_msgs, out_dir)
 
             # 5c — re-summarize from full Postgres record → overwrite summary.md
-            prompt = build_thread_prompt(config.ollama, thread, all_msgs)
-            summary_text = ollama._generate(prompt)
+            prompt = build_thread_prompt(config.openai, thread, all_msgs)
+            summary_text = llm_client._generate(prompt)
             write_summary(thread, summary_text, out_dir)
 
             # 5d — clear the flag
@@ -380,7 +380,7 @@ def run_normal(conn, config, run_id: str) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="chat-summarizer — track and summarize chat threads with a local LLM"
+        description="chat-summarizer — track and summarize chat threads with an OpenAI-compatible LLM"
     )
     parser.add_argument("--config", default="config.yaml", help="Path to config.yaml")
     parser.add_argument(

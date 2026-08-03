@@ -32,12 +32,19 @@ teams:
   max_messages_per_run: 200
   page_size: 50
 
-ollama:
-  url: "http://ollama:11434"
-  model: "llama3.1:8b"
+openai:
+  # Your OpenAI API key (see .env.example).
+  api_key: "${OPENAI_API_KEY}"
+  # Leave base_url commented out to talk to OpenAI directly. Uncomment and
+  # set OPENAI_BASE_URL (in .env) to point at any other OpenAI-API-compatible
+  # inference engine instead — e.g. a self-hosted Ollama instance's
+  # "http://ollama:11434/v1", vLLM, LM Studio, etc. Ollama is just one of
+  # many such engines.
+  # base_url: "${OPENAI_BASE_URL}"
+  model: "gpt-4o-mini"
   options:
     temperature: 0.3
-    num_predict: 1024
+    max_tokens: 1024
     top_p: 0.9
   prompt_template: |
     You are an expert at summarizing workplace chat conversations.

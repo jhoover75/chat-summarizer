@@ -24,33 +24,16 @@ services:
       start_period: 20s
 
   # -------------------------------------------------------------------------
-  # Ollama — local LLM inference server
-  # Pull model first: docker compose run --rm ollama ollama pull llama3.1:8b
+  # LLM inference — this app talks to the standard OpenAI Chat Completions
+  # API (see src/summarizer/openai_client.py), configured via config.yaml's
+  # `openai:` section and the OPENAI_API_KEY / OPENAI_BASE_URL env vars.
+  #
+  # By default this means the real OpenAI API — no local container needed.
+  # If you'd rather run your own OpenAI-API-compatible inference engine
+  # (Ollama, vLLM, LM Studio, etc.), add a service for it here and point
+  # OPENAI_BASE_URL (in .env) at its OpenAI-compatible endpoint — e.g. a
+  # local Ollama's "http://ollama:11434/v1".
   # -------------------------------------------------------------------------
-  # ollama:
-  #   image: ollama/ollama:latest
-  #   container_name: chat-summarizer-ollama
-  #   restart: "no"
-  #   ports:
-  #     - "11434:11434"
-  #   volumes:
-  #     - ./ollama-models:/root/.ollama
-  #   environment:
-  #     - OLLAMA_KEEP_ALIVE=0
-  #   # Remove the 'deploy' block if running CPU-only (no NVIDIA GPU)
-  #   deploy:
-  #     resources:
-  #       reservations:
-  #         devices:
-  #           - driver: nvidia
-  #             count: 1
-  #             capabilities: [gpu]
-  #   healthcheck:
-  #     test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-  #     interval: 10s
-  #     timeout: 5s
-  #     retries: 5
-  #     start_period: 30s
 
   # -------------------------------------------------------------------------
   # chat-summarizer — Python application (runs once and exits)
@@ -76,8 +59,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-      # ollama:
-      #   condition: service_healthy
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./summaries:/app/summaries

@@ -9,7 +9,10 @@ logs/
 # Database
 data/
 
-# Ollama model weights (large binary files)
+
+# No longer used for Ollama model weights (this app now uses the OpenAI
+# API), but this directory has other local, non-repo content in it — keep
+# ignoring it for now rather than exposing that.
 ollama-models/
 
 # Python

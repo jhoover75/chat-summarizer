@@ -2,7 +2,7 @@
 models.py — Python dataclasses for the archive layer.
 
 Message: one chat message from any platform.
-Summary: the result of an Ollama summarization run for one channel.
+Summary: the result of an OpenAI summarization run for one channel.
 MessageGroup: a collection of messages belonging to the same thread.
 TrackedThread: a thread the user cares about, persisted in Postgres.
 """

@@ -29,9 +29,9 @@ def test_load_minimal_config(tmp_path, monkeypatch):
           client_id: ""
           client_secret: ""
           teams_channels: []
-        ollama:
-          url: "http://localhost:11434"
-          model: "llama3.1:8b"
+        openai:
+          api_key: "test-key"
+          model: "gpt-4o-mini"
           prompt_template: "test prompt"
         output:
           directory: "/tmp/summaries"
@@ -104,9 +104,9 @@ def test_tracking_defaults(tmp_path, monkeypatch):
           client_id: ""
           client_secret: ""
           teams_channels: []
-        ollama:
-          url: "http://localhost:11434"
-          model: "llama3.1:8b"
+        openai:
+          api_key: "test-key"
+          model: "gpt-4o-mini"
           prompt_template: ""
         output:
           directory: "/tmp/summaries"
