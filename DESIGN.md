@@ -26,7 +26,7 @@
 
 ## 1. System Overview
 
-`chat-summarizer` is a self-hosted, cron-schedulable CLI tool that monitors Rocket.Chat and Microsoft Teams for chat threads the user cares about — threads they started, are following on the platform, or have been mentioned in — and uses a locally-running Ollama LLM to generate per-thread summaries. The system tracks eligible threads in a PostgreSQL `tracked_threads` table and stores only those threads' messages. Each run fetches all new channel activity, identifies newly eligible threads, appends new messages to a cumulative per-thread `raw.md` transcript, and re-summarizes any thread with new activity. Output is one directory per thread containing `raw.md` (the complete verbatim chat history) and `summary.md` (the latest LLM summary with deep links back to the source). Threads age out after a configurable period of inactivity; deletion requires an explicit `--prune` command so the user can review before anything is removed. All components carry MIT, Apache 2.0, or LGPL licenses, the entire stack runs in Docker Compose on Linux, and no message content ever leaves the host.
+`chat-summarizer` is a self-hosted, cron-schedulable CLI tool that monitors Rocket.Chat and Microsoft Teams for chat threads the user cares about — threads they started, are following on the platform, or have been mentioned in — and uses an OpenAI-compatible LLM to generate per-thread summaries. The system tracks eligible threads in a PostgreSQL `tracked_threads` table and stores only those threads' messages. Each run fetches all new channel activity, identifies newly eligible threads, appends new messages to a cumulative per-thread `raw.md` transcript, and re-summarizes any thread with new activity. Output is one directory per thread containing `raw.md` (the complete verbatim chat history) and `summary.md` (the latest LLM summary with deep links back to the source). Threads age out after a configurable period of inactivity; deletion requires an explicit `--prune` command so the user can review before anything is removed. All components carry MIT, Apache 2.0, or LGPL licenses, and the entire stack runs in Docker Compose on Linux. Because summarization is delegated to the OpenAI API (or another OpenAI-API-compatible endpoint of your choosing, such as a self-hosted engine), message content is sent to whichever endpoint `openai.base_url` points at — unlike the previous locally-hosted-only design, it is no longer guaranteed to stay on the host.
 
 ---
 
@@ -38,32 +38,28 @@
 | httpx | BSD | 0.27+ | Async HTTP client for Rocket.Chat and Graph API calls |
 | PyYAML | MIT | 6.x | Parsing `config.yaml` and writing YAML output |
 | Jinja2 | BSD | 3.x | Templating Markdown output files |
-| ollama (Python SDK) | MIT | 0.3+ | Client library for local Ollama REST API |
+| openai (Python SDK) | Apache 2.0 | 2.x | Client library for the OpenAI Chat Completions API |
 | PostgreSQL | PostgreSQL License (permissive) | 16+ | Persistent message archive and deduplication store |
 | psycopg2-binary | LGPL v3 | 2.9+ | PostgreSQL driver for Python; LGPL is permissive for application use |
 | python-dateutil | Apache 2.0 | 2.x | Robust datetime parsing from API responses |
 | msal | MIT | 1.x | Microsoft Authentication Library — handles OAuth2 token acquisition for Graph API |
 | tenacity | Apache 2.0 | 8.x | Retry logic with exponential backoff for API calls |
 | structlog | MIT | 24.x | Structured logging (JSON-safe, easy to pipe to files) |
-| Ollama (server) | MIT | 0.3+ | Local LLM inference runner; exposes OpenAI-compatible REST API on port 11434 |
-| Llama 3.1 8B (default model) | Meta Llama 3 Community License* | — | Recommended default LLM; fits in 8 GB VRAM / 16 GB RAM with 4-bit quant |
-| Mistral 7B (alternative) | Apache 2.0 | — | Apache 2.0 alternative; similar quality, slightly lower RAM use |
+| OpenAI API (or compatible endpoint) | Proprietary (OpenAI) or varies by engine | — | Chat Completions endpoint used for summarization; defaults to OpenAI's own API but `openai.base_url` can point at any OpenAI-API-compatible engine instead (e.g. a self-hosted Ollama, vLLM, LM Studio) |
 | Docker Engine | Apache 2.0 | 25+ | Container runtime |
 | Docker Compose | Apache 2.0 | v2 | Multi-container orchestration |
-
-> **Note on Llama 3.1 license:** Meta's Llama 3 Community License is not OSI-approved but permits free commercial and research use for deployments under 700M monthly active users. If your organisation requires a fully Apache-licensed model, use `mistral:7b` instead — quality is comparable and the license is clean Apache 2.0.
 
 > **Note on psycopg2-binary license:** psycopg2-binary is LGPL v3. LGPL requires that modifications to the library itself be open-sourced, but using it as a dependency in your application imposes no restrictions on your own code. This is standard practice for commercial and private projects. If a stricter license is required, `pg8000` (BSD) is a pure-Python alternative, though it is less commonly used.
 
 ### LLM Model Selection Guidance
 
-| Model | Ollama tag | VRAM required | Notes |
-|---|---|---|---|
-| Llama 3.1 8B (Q4_K_M) | `llama3.1:8b` | ~5 GB | Best overall quality for summarization tasks at this size |
-| Mistral 7B (Q4_K_M) | `mistral:7b` | ~4.5 GB | Apache 2.0, strong instruction following |
-| Phi-3 Mini (Q4) | `phi3:mini` | ~2.5 GB | Works on CPU-only hosts; noticeably lower quality |
+| Model | Notes |
+|---|---|
+| `gpt-4o-mini` (default) | Best default balance of cost, latency, and summarization quality for this workload |
+| `gpt-4o` | Higher quality for complex threads, at higher per-token cost |
+| Self-hosted (e.g. Ollama's `llama3.1:8b`, `mistral:7b`) | Set `openai.base_url` to the engine's OpenAI-compatible endpoint; quality and latency depend on the model and hardware you choose |
 
-If no GPU is available, any of these will run on CPU — expect 30–120 seconds per channel summary rather than 3–8 seconds.
+Any model name accepted by the configured endpoint works — set `openai.model` in `config.yaml` accordingly.
 
 ---
 
@@ -72,7 +68,7 @@ If no GPU is available, any of these will run on CPU — expect 30–120 seconds
 ```
 chat-summarizer/
 │
-├── docker-compose.yml          # Orchestrates app + Ollama containers
+├── docker-compose.yml          # Orchestrates Postgres + app containers
 ├── Dockerfile                  # Python app image
 ├── .env.example                # Template for secrets (never commit .env)
 ├── .env                        # Actual secrets (gitignored)
@@ -103,7 +99,7 @@ chat-summarizer/
 │   │
 │   ├── summarizer/
 │   │   ├── __init__.py
-│   │   ├── ollama_client.py    # Wraps Ollama Python SDK; sends prompt, parses response
+│   │   ├── openai_client.py    # Wraps the OpenAI Chat Completions API; sends prompt, parses response
 │   │   └── prompt_builder.py   # Builds prompt from messages + Jinja2 template
 │   │
 │   ├── output/
@@ -132,8 +128,6 @@ chat-summarizer/
 │                   └── 1686812345678/
 │                       ├── raw.md
 │                       └── summary.md
-│
-├── ollama-models/              # Ollama model weights (bind-mounted into Ollama container)
 │
 ├── tests/
 │   ├── __init__.py
@@ -230,20 +224,26 @@ teams:
   page_size: 50
 
 # ---------------------------------------------------------------------------
-# Ollama (local LLM)
+# OpenAI (or any OpenAI-API-compatible inference engine)
 # ---------------------------------------------------------------------------
-ollama:
-  # URL of the Ollama server. When running via Docker Compose, use the
-  # service name as hostname: http://ollama:11434
-  url: "http://ollama:11434"
+openai:
+  # Your OpenAI API key. Set OPENAI_API_KEY in .env.
+  api_key: "${OPENAI_API_KEY}"
 
-  # Model to use. Run `ollama pull llama3.1:8b` (or mistral:7b) first.
-  model: "llama3.1:8b"
+  # Optional. Leave unset/commented to talk to OpenAI's own API. Set to any
+  # other OpenAI-API-compatible endpoint instead — e.g. a self-hosted Ollama
+  # instance's "http://ollama:11434/v1", vLLM, LM Studio, etc. Ollama is just
+  # one of many such engines. Set OPENAI_BASE_URL in .env.
+  base_url: "${OPENAI_BASE_URL}"
 
-  # Ollama generation options (passed through to the API)
+  # Model to use — any chat-capable model name accepted by the configured
+  # endpoint.
+  model: "gpt-4o-mini"
+
+  # Chat Completions generation options (passed through to the API)
   options:
     temperature: 0.3        # Lower = more deterministic summaries
-    num_predict: 1024       # Max tokens in response
+    max_tokens: 1024        # Max tokens in response
     top_p: 0.9
 
   # Prompt template. Use Jinja2 syntax.
@@ -282,7 +282,7 @@ ollama:
     ## Actions & Decisions
     - [ACTION/DECISION] <item>
 
-  # Timeout in seconds for a single Ollama request. Long for large message batches.
+  # Timeout in seconds for a single request. Long for large message batches.
   timeout_seconds: 120
 
 # ---------------------------------------------------------------------------
@@ -372,6 +372,11 @@ logging:
 # Rocket.Chat credentials
 RC_USER_ID=your_rocketchat_user_id
 RC_AUTH_TOKEN=your_personal_access_token
+
+# OpenAI credentials
+OPENAI_API_KEY=your_openai_api_key
+# Optional — only set if using a non-OpenAI, OpenAI-API-compatible endpoint
+# OPENAI_BASE_URL=http://ollama:11434/v1
 
 # Microsoft Teams / Azure credentials
 TEAMS_TENANT_ID=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
@@ -563,13 +568,13 @@ main.py — for each tracked thread where needs_resummary = TRUE:
          ORDER BY timestamp ASC
         → Returns the FULL thread history (not just new messages)
 
-  └── summarizer/prompt_builder.py::build_prompts(ollama_config, thread, messages)
+  └── summarizer/prompt_builder.py::build_prompts(openai_config, thread, messages)
         - Formats all messages into prompt text
         - Splits into chunks if needed (see §13.4)
         - Returns list of rendered prompt strings
 
-  └── summarizer/ollama_client.py::summarize(prompts, thread, run_id)
-        POST http://ollama:11434/api/generate
+  └── summarizer/openai_client.py::summarize(prompts, thread, run_id)
+        POST https://api.openai.com/v1/chat/completions (or openai.base_url, if set)
         → Returns a Summary dataclass
 
   └── output/markdown_writer.py::write_summary(thread, summary, output_dir)
@@ -943,35 +948,14 @@ services:
       start_period: 20s
 
   # -----------------------------------------------------------------------
-  # Ollama — local LLM inference server
-  # -----------------------------------------------------------------------
-  ollama:
-    image: ollama/ollama:latest      # Apache 2.0 / MIT — https://github.com/ollama/ollama
-    container_name: chat-summarizer-ollama
-    restart: "no"                    # No daemon; starts fresh each compose run
-    ports:
-      - "11434:11434"                # Expose locally for debugging; not required for app→ollama
-    volumes:
-      - ./ollama-models:/root/.ollama  # Persist downloaded model weights between runs
-    environment:
-      - OLLAMA_KEEP_ALIVE=0          # Unload model from VRAM immediately after inference
-    # GPU support (NVIDIA) — remove this deploy section if running CPU-only
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  # -----------------------------------------------------------------------
   # chat-summarizer — the Python application
+  #
+  # No separate LLM service is defined here — the app talks directly to the
+  # OpenAI Chat Completions API using OPENAI_API_KEY (from .env). To use a
+  # self-hosted OpenAI-API-compatible engine instead (Ollama, vLLM, LM
+  # Studio, etc.), add a service for it and set OPENAI_BASE_URL to its
+  # OpenAI-compatible endpoint — see README.md's "Using a self-hosted
+  # OpenAI-compatible engine" section.
   # -----------------------------------------------------------------------
   app:
     build:
@@ -982,8 +966,6 @@ services:
     depends_on:
       postgres:
         condition: service_healthy   # Wait until Postgres is ready
-      ollama:
-        condition: service_healthy   # Wait until Ollama is ready
     volumes:
       - ./config.yaml:/app/config.yaml:ro          # Config (read-only)
       - ./state.json:/app/state.json               # State file (read-write)
@@ -1002,13 +984,10 @@ volumes:
 
 ### Usage Notes
 
-**First run — start Postgres and pull Ollama model:**
+**First run — start Postgres:**
 ```bash
 # Start Postgres in the background (persistent service)
 docker compose up -d postgres
-
-# Pull the Ollama model weight once (stored in ./ollama-models/)
-docker compose run --rm ollama ollama pull llama3.1:8b
 ```
 
 **Manual run:**
@@ -1091,7 +1070,7 @@ CMD ["python", "-m", "src.main", "--config", "/app/config.yaml"]
 httpx==0.27.0
 PyYAML==6.0.2
 Jinja2==3.1.4
-ollama==0.3.3
+openai==2.52.0
 python-dateutil==2.9.0
 msal==1.29.0
 tenacity==8.3.0
@@ -1128,7 +1107,7 @@ The summarizer is designed to be invoked by cron as a one-shot Docker Compose ru
 
 ### Cron Lockfile (Prevent Overlapping Runs)
 
-For hourly cron jobs, add `flock` to prevent overlap if a previous run is still active (e.g., if Ollama is slow on a large backlog):
+For hourly cron jobs, add `flock` to prevent overlap if a previous run is still active (e.g., if the configured LLM endpoint is slow on a large backlog):
 
 ```crontab
 0 * * * * flock -n /tmp/chat-summarizer.lock -c "cd /opt/chat-summarizer && docker compose run --rm app" >> /var/log/chat-summarizer-cron.log 2>&1
@@ -1217,7 +1196,7 @@ CREATE TABLE IF NOT EXISTS tracked_threads (
                     CHECK (status IN ('active', 'aged_out')),
 
     -- Set to TRUE when new messages arrive; set to FALSE after summary.md is written.
-    -- Only threads with needs_resummary = TRUE are sent to Ollama on each run.
+    -- Only threads with needs_resummary = TRUE are sent to the LLM on each run.
     needs_resummary BOOLEAN         NOT NULL DEFAULT FALSE,
 
     UNIQUE (platform, channel, thread_id)
@@ -1317,7 +1296,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     -- Number of messages included in this summary
     message_count       INTEGER         NOT NULL DEFAULT 0,
 
-    -- The full summary text as returned by Ollama (raw LLM output)
+    -- The full summary text as returned by the LLM (raw model output)
     summary_text        TEXT            NOT NULL DEFAULT '',
 
     -- Structured extracted sections stored as JSONB
@@ -1333,7 +1312,7 @@ CREATE TABLE IF NOT EXISTS summaries (
     -- LLM model used
     model               TEXT            NOT NULL,
 
-    -- Ollama generation time in seconds
+    -- LLM generation time in seconds
     generation_seconds  REAL,
 
     -- Whether the LLM call succeeded
@@ -1406,7 +1385,7 @@ The system achieves idempotency at two levels:
 `INSERT INTO messages ... ON CONFLICT (platform, message_id) DO NOTHING` uses the composite primary key. Re-running after a crash or partial failure will skip already-inserted messages silently.
 
 **Level 2 — Summary deduplication (summarization):**
-Before calling Ollama, `main.py` checks the `summaries` table:
+Before calling the LLM, `main.py` checks the `summaries` table:
 ```python
 existing = db.query(
     "SELECT id FROM summaries WHERE platform=%s AND channel=%s AND summary_date=%s AND success=TRUE",
@@ -1416,7 +1395,7 @@ if existing and not config.output.overwrite_existing:
     logger.info("Summary already exists for %s/%s/%s — skipping", platform, channel, today)
     continue
 ```
-This prevents burning Ollama inference time re-generating summaries that already exist on disk.
+This prevents burning LLM inference time (and API cost) re-generating summaries that already exist on disk.
 
 **Level 3 — State file prevents re-fetching:**
 The state file stores the `timestamp` of the newest successfully processed message per channel. On next run, the API query uses `oldest=<that timestamp>`, so the API itself returns only new messages. This is the primary defense against redundant work.
@@ -1534,7 +1513,7 @@ def build_prompts(config, channel, messages) -> list[str]:
     return [render_template(config, channel, chunk) for chunk in chunks]
 ```
 
-When multiple chunks exist, each gets a separate Ollama call. The output writer then combines the partial summaries with a final "combine" prompt:
+When multiple chunks exist, each gets a separate LLM call. The output writer then combines the partial summaries with a final "combine" prompt:
 
 ```
 You are given multiple partial summaries of the same chat channel.
@@ -1577,7 +1556,8 @@ def _enrich_with_parent(self, messages: list[Message]) -> list[Message]:
 - **Secrets in environment variables only.** The `.env` file is gitignored. The `config.yaml` uses `${VAR}` references that are never expanded if the env var is missing (raises `ConfigError`).
 - **Docker bind mounts are volume-only.** No secrets are baked into the Docker image.
 - **PostgreSQL credentials are injected via environment variables only.** The Postgres password lives in `.env` (gitignored) and is passed to both the `postgres` and `app` containers via `env_file`. Never hardcode it in `config.yaml` or `docker-compose.yml`. The named Docker volume (`postgres-data`) is owned by the Postgres container and is not directly accessible on the host filesystem.
-- **Ollama runs without auth by default.** If the host is multi-user, set `OLLAMA_HOST=127.0.0.1` so Ollama only binds localhost and is not accessible on the Docker bridge network from other containers.
+- **Message content leaves the host.** Unlike a fully local-only setup, summarization now sends chat message text to `openai.base_url` (OpenAI's API by default). If that's unacceptable for your data, point `base_url` at a self-hosted OpenAI-API-compatible engine (e.g. Ollama) instead so content never leaves your infrastructure — see README.md.
+- **Guard `OPENAI_API_KEY` like any other credential.** It's read from `.env` (gitignored) the same way as the Rocket.Chat and Postgres secrets; rotate it if it's ever exposed, and scope it with usage limits in the OpenAI dashboard if available.
 - **LLM output is untrusted.** The Markdown writer uses Jinja2's `autoescape=False` since we want raw Markdown from the LLM. However, any user-provided data (message bodies) injected into the template uses `{{ message | e }}` (HTML-escaped) to prevent injection if the output is later rendered as HTML.
 - **Rocket.Chat tokens do not expire** — rotate them quarterly and revoke immediately if the server logs show unexpected API activity.
 - **Teams client secrets expire** — set a calendar reminder to rotate them before the configured expiry date (default 12–24 months in Azure).
@@ -1616,8 +1596,8 @@ This makes it easy to see the history of when the summarizer ran and what it saw
 ```
 Thread first tracked:          needs_resummary = FALSE (no messages yet)
 New messages stored:           needs_resummary = TRUE
-Ollama summarization succeeds: needs_resummary = FALSE
-Ollama summarization fails:    needs_resummary = TRUE  (retries next run)
+LLM summarization succeeds:    needs_resummary = FALSE
+LLM summarization fails:       needs_resummary = TRUE  (retries next run)
 Thread aged out:               needs_resummary unchanged (skipped in summarization)
 ```
 

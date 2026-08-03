@@ -1,26 +1,30 @@
 """
-ollama_client.py — Wraps the Ollama REST API for summarization.
+openai_client.py — Wraps the OpenAI Chat Completions API for summarization.
 
-Sends one or more prompts (chunks) to Ollama and parses the structured
-response into a Summary dataclass. If multiple chunks are sent, a final
-"merge" prompt combines them.
+Sends one or more prompts (chunks) to the configured OpenAI-API-compatible
+endpoint and parses the structured response into a Summary dataclass. If
+multiple chunks are sent, a final "merge" prompt combines them.
+
+Because this talks to the standard OpenAI Chat Completions API, `base_url`
+can point at OpenAI itself or at any other OpenAI-API-compatible inference
+engine (Ollama's `/v1` endpoint, vLLM, LM Studio, etc.) — Ollama is just one
+of many such engines.
 
 See DESIGN.md §5 Step 7 and §13.4 for details.
 """
 
 from __future__ import annotations
 
-import re
 import time
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
-import httpx
+from openai import OpenAI
 
 from src.archive.models import Summary
 
 if TYPE_CHECKING:
-    from src.config import OllamaConfig
+    from src.config import OpenAIConfig
 
 MERGE_PROMPT = """You are given multiple partial summaries of the same chat channel.
 Merge them into a single coherent summary using exactly this structure:
@@ -43,12 +47,13 @@ class SummarizationError(Exception):
     pass
 
 
-class OllamaClient:
+class OpenAIClient:
 
-    def __init__(self, config: "OllamaConfig"):
+    def __init__(self, config: "OpenAIConfig"):
         self._config = config
-        self._client = httpx.Client(
-            base_url=config.url,
+        self._client = OpenAI(
+            api_key=config.api_key,
+            base_url=config.base_url,
             timeout=config.timeout_seconds,
         )
 
@@ -112,21 +117,14 @@ class OllamaClient:
             )
 
     def _generate(self, prompt: str) -> str:
-        resp = self._client.post(
-            "/api/generate",
-            json={
-                "model": self._config.model,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": self._config.options.temperature,
-                    "num_predict": self._config.options.num_predict,
-                    "top_p": self._config.options.top_p,
-                },
-            },
+        resp = self._client.chat.completions.create(
+            model=self._config.model,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=self._config.options.temperature,
+            max_tokens=self._config.options.max_tokens,
+            top_p=self._config.options.top_p,
         )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
+        return (resp.choices[0].message.content or "").strip()
 
     def _parse_response(self, text: str) -> tuple[list[str], list[str]]:
         """Extract key points and actions from the structured LLM response."""
